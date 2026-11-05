@@ -27,7 +27,7 @@ set more off
 set maxvar 32767
 
 * ============================================================================
-* 1. DEFINE PATHS
+* 1. USER SETTINGS: PATHS, EXAMPLES
 * ============================================================================
 * Auto-detect the dataset root from global nhis_root, the dataset folder,
 * code/, or the repo root.
@@ -376,80 +376,83 @@ if _rc == 0 {
 * ============================================================================
 * 10. INCOME / POVERTY RATIO
 * ============================================================================
-* ratcat_a: Ratio of family income to poverty threshold (14 categories)
-*   Same coding in both eras (harmonized in 01_load_and_append):
-*     01=Under 0.50, 02=0.50-0.74, 03=0.75-0.99, 04=1.00-1.24,
-*     05=1.25-1.49, 06=1.50-1.74, 07=1.75-1.99, 08=2.00-2.49,
-*     09=2.50-2.99, 10=3.00-3.49, 11=3.50-3.99, 12=4.00-4.49,
-*     13=4.50-4.99, 14=5.00+
-*   Pre-2019 also has 15-17 (NFS=No Further Specificity) and 96/99.
-*   Post-2019 has 98=Not ascertained.
-*
-* incgrp_a: Total combined family income (grouped)
-*   Both eras: 1=$0-$34,999, 2=$35,000-$49,999, 3=$50,000-$74,999,
-*              4=$75,000-$99,999, 5=$100,000+
-*   Pre-2019 also has 6-7 (NFS categories), 96/99.
-*   Post-2019: only available in 2019-2020, dropped in 2021+.
-*
-* ernyr_a: Total personal earnings last year (pre-2019 only)
-*   11 categories: 01=$1-$4,999 through 11=$75,000+
-*   Not available in post-2019.
-*
-* povrattc_a: Continuous poverty ratio (post-2019 only, from main file)
-*   Available in 2019+ main adult file (top-coded).
-*   For precise analysis, use multiple imputation files (adultinc).
-
-display as text _newline "============================================"
-display as text "   CLEANING INCOME / POVERTY"
-display as text "============================================"
-
-* --- Poverty ratio categories (broad groups, comparable across eras) ---
+* Native values and provenance are preserved. See docs/income_variable_matrix.md.
+* Main-file post-2019 income is implicate 1 of ten; strict is not reported-only.
+display as text "Cleaning income / poverty..."
 capture confirm variable ratcat_a
 if _rc == 0 {
-    gen pov_cat = .
-    * Below poverty (FPL ratio < 1.00): codes 01-03
-    replace pov_cat = 1 if ratcat_a >= 1 & ratcat_a <= 3
-    * 1.00-1.99 FPL: codes 04-07
-    replace pov_cat = 2 if ratcat_a >= 4 & ratcat_a <= 7
-    * 2.00-3.99 FPL: codes 08-11
-    replace pov_cat = 3 if ratcat_a >= 8 & ratcat_a <= 11
-    * 4.00+ FPL: codes 12-14
-    replace pov_cat = 4 if ratcat_a >= 12 & ratcat_a <= 14
-    * NFS codes (pre-2019 only): 15-17 → leave as missing
-
-    label define pov_cat 1 "Below poverty (<100% FPL)" ///
-                         2 "100-199% FPL" ///
-                         3 "200-399% FPL" ///
-                         4 "400%+ FPL"
+    gen byte pov_cat = .
+    replace pov_cat = 1 if inrange(ratcat_a,1,3)
+    replace pov_cat = 2 if inrange(ratcat_a,4,7)
+    replace pov_cat = 3 if inrange(ratcat_a,8,11)
+    replace pov_cat = 4 if inrange(ratcat_a,12,14)
+    label define pov_cat 1 "Below poverty (<100% FPL)" 2 "100-199% FPL" ///
+        3 "200-399% FPL" 4 "400%+ FPL"
     label values pov_cat pov_cat
-    label var pov_cat "Poverty ratio category (4 groups)"
-
-    * Binary: below poverty
-    gen below_poverty = (pov_cat == 1) if !missing(pov_cat)
-    label var below_poverty "Below federal poverty level (1=Yes)"
-
-    * Binary: low income (below 200% FPL)
-    gen low_income = (pov_cat <= 2) if !missing(pov_cat)
-    label var low_income "Low income, below 200% FPL (1=Yes)"
+    gen byte below_poverty = (pov_cat == 1) if !missing(pov_cat)
+    gen byte low_income = (pov_cat <= 2) if !missing(pov_cat)
+    clonevar pov_cat_with_coarse = pov_cat
+    clonevar below_poverty_with_coarse = below_poverty
+    clonevar low_income_with_coarse = low_income
+    replace pov_cat_with_coarse = 1 if inrange(srvy_yr,2007,2018) & ratcat_a == 15
+    replace pov_cat_with_coarse = 2 if inrange(srvy_yr,2007,2018) & ratcat_a == 16
+    replace below_poverty_with_coarse = 1 if inrange(srvy_yr,2007,2018) & ratcat_a == 15
+    replace below_poverty_with_coarse = 0 if inrange(srvy_yr,2007,2018) & inlist(ratcat_a,16,17)
+    replace low_income_with_coarse = 1 if inrange(srvy_yr,2007,2018) & inlist(ratcat_a,15,16)
+    replace low_income_with_coarse = 0 if inrange(srvy_yr,2007,2018) & ratcat_a == 17
+    gen byte pov_cat_src = cond(!missing(pov_cat),1,cond(!missing(pov_cat_with_coarse),2,0))
+    gen byte poverty_binary_src = cond(!missing(below_poverty),1,cond(!missing(below_poverty_with_coarse),2,0))
+    label define poverty_src 0 "Unavailable" 1 "Detailed" 2 "Interview bracket"
+    label values pov_cat_src poverty_src
+    label values poverty_binary_src poverty_src
+    label var pov_cat_with_coarse "Poverty groups including reported interview brackets"
+    label var below_poverty_with_coarse "Below poverty including interview brackets"
+    label var low_income_with_coarse "Below 200% including interview brackets"
 }
-
-* --- Income group (5 categories) ---
 capture confirm variable incgrp_a
 if _rc == 0 {
-    gen income_cat = .
-    replace income_cat = 1 if incgrp_a == 1
-    replace income_cat = 2 if incgrp_a == 2
-    replace income_cat = 3 if incgrp_a == 3
-    replace income_cat = 4 if incgrp_a == 4
-    replace income_cat = 5 if incgrp_a == 5
-    * NFS codes (pre-2019: 6-7), 96/99 → missing
-
+    gen byte income_cat = .
+    replace income_cat = 1 if srvy_yr <= 2006 & (inrange(incgrp_a,1,6) | incgrp_a == 13)
+    replace income_cat = 2 if srvy_yr <= 2006 & incgrp_a == 7
+    replace income_cat = 3 if srvy_yr <= 2006 & inlist(incgrp_a,9,10)
+    replace income_cat = incgrp_a if srvy_yr >= 2007 & inrange(incgrp_a,1,5)
     label define income_cat 1 "$0-$34,999" 2 "$35,000-$49,999" ///
-                            3 "$50,000-$74,999" 4 "$75,000-$99,999" ///
-                            5 "$100,000+"
+        3 "$50,000-$74,999" 4 "$75,000-$99,999" 5 "$100,000+"
     label values income_cat income_cat
-    label var income_cat "Family income category (5 groups)"
+    label var income_cat "Nominal family income (5 bands; conservative early mapping)"
+    gen byte income_cat3 = .
+    replace income_cat3 = 1 if srvy_yr <= 2006 & (inrange(incgrp_a,1,6) | incgrp_a == 13)
+    replace income_cat3 = 2 if srvy_yr <= 2006 & inrange(incgrp_a,7,10)
+    replace income_cat3 = 3 if srvy_yr <= 2006 & incgrp_a == 11
+    replace income_cat3 = 1 if srvy_yr >= 2007 & incgrp_a == 1
+    replace income_cat3 = 2 if srvy_yr >= 2007 & inlist(incgrp_a,2,3)
+    replace income_cat3 = 3 if srvy_yr >= 2007 & inlist(incgrp_a,4,5)
+    gen byte income_cat3_src = cond(missing(income_cat3),0,1)
+    capture confirm variable incgrp5
+    if _rc == 0 {
+        tempvar bridge
+        gen byte `bridge' = .
+        replace `bridge' = 1 if incgrp5 == 1
+        replace `bridge' = 2 if incgrp5 == 2
+        replace `bridge' = 3 if inlist(incgrp5,3,4)
+        assert income_cat3 == `bridge' if inrange(srvy_yr,2014,2018) & !missing(income_cat3,`bridge')
+        replace income_cat3_src = 2 if inrange(srvy_yr,2014,2018) & missing(income_cat3) & !missing(`bridge')
+        replace income_cat3 = `bridge' if income_cat3_src == 2
+        drop `bridge'
+    }
+    label define income_cat3 1 "Under $35,000" 2 "$35,000-$74,999" 3 "$75,000+"
+    label values income_cat3 income_cat3
+    label define income_cat3_src 0 "Unavailable" 1 "Primary construction" 2 "INCGRP5 bridge"
+    label values income_cat3_src income_cat3_src
 }
+capture confirm variable income_value_src
+if _rc == 0 {
+    label define income_value_src 0 "Pre-2019 reported construction" ///
+        1 "Post-2019 reported" 2 "Post-2019 imputed; main implicate 1"
+    label values income_value_src income_value_src
+    tab srvy_yr income_value_src, missing
+}
+* Bracket companions use interview thresholds, estimated for 2018.
 
 * --- Personal earnings (pre-2019 only) ---
 capture confirm variable ernyr_a
@@ -516,6 +519,7 @@ display as text "   DESCRIPTIVE STATISTICS (optional; not run by default)"
 display as text "============================================"
 
 if `run_examples' {
+display as text "Income examples use main-file values; use 03/04 for MI inference."
 * 13a. Year distribution
 tab srvy_yr
 
@@ -574,6 +578,7 @@ display as text "   EXAMPLE REGRESSIONS (optional; not run by default)"
 display as text "============================================"
 
 if `run_examples' {
+display as text "Income examples use main-file values; use 03/04 for MI inference."
 * 14a. OLS: Uninsured ~ demographics (unweighted)
 display as text _newline "--- OLS: Uninsured ~ demographics (unweighted) ---"
 capture reg uninsured female agep_a i.race_eth i.educ_cat i.srvy_yr
@@ -619,7 +624,8 @@ display as text "============================================"
 *    harmonizable income measure across all years. It uses the same
 *    14-category coding in both eras.
 *    For continuous family income or more detailed poverty ratios,
-*    use the multiple imputation files (INCMIMP pre-2019, adultinc
+*    use the multiple imputation files (INCIMPS + INCMIMP in 2004-08,
+*    INCMIMP in 2009-18, adultinc
 *    post-2019) with proper MI techniques (Rubin's rules).
 *
 * 3. RACE HARMONIZATION:

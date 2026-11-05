@@ -27,7 +27,7 @@ library(haven)
 library(dplyr)
 
 # ============================================================================
-# 1. DEFINE PATHS
+# 1. USER SETTINGS: PATHS, EXPORTS, EXAMPLES
 # ============================================================================
 
 # Optional manual path override. Leave as NULL for auto-detection.
@@ -482,65 +482,74 @@ if ("bmicat_a" %in% names(nhis)) {
 # ============================================================================
 # 10. INCOME / POVERTY RATIO
 # ============================================================================
-# ratcat_a: Ratio of family income to poverty threshold (14 categories)
-#   Same coding in both eras (harmonized in 01_load_and_append):
-#     01=Under 0.50, 02=0.50-0.74, ..., 14=5.00+
-#   Pre-2019 also has 15-17 (NFS) and 96/99.
-#   Post-2019 has 98=Not ascertained.
-#
-# incgrp_a: Total combined family income (grouped, 5 categories)
-#   Available in all pre-2019 years + 2019-2020 only (dropped 2021+).
-#
-# ernyr_a: Total personal earnings last year (pre-2019 only, 11 categories)
-#
-# povrattc_a: Continuous poverty ratio (post-2019 only, from main file)
-
+# Native values and provenance are preserved. See docs/income_variable_matrix.md.
+# Before 2019 these are reported constructions; from 2019 the main-file values
+# are implicate 1 of ten. Strict boundaries do not mean reported-only values.
 cat("Cleaning income / poverty...\n")
-
-# --- Poverty ratio categories (broad groups, comparable across eras) ---
 if ("ratcat_a" %in% names(nhis)) {
-  nhis <- nhis %>%
-    mutate(
-      pov_cat = case_when(
-        # Below poverty (FPL ratio < 1.00): codes 01-03
-        ratcat_a >= 1 & ratcat_a <= 3   ~ "Below poverty (<100% FPL)",
-        # 100-199% FPL: codes 04-07
-        ratcat_a >= 4 & ratcat_a <= 7   ~ "100-199% FPL",
-        # 200-399% FPL: codes 08-11
-        ratcat_a >= 8 & ratcat_a <= 11  ~ "200-399% FPL",
-        # 400%+ FPL: codes 12-14
-        ratcat_a >= 12 & ratcat_a <= 14 ~ "400%+ FPL",
-        # NFS codes (pre-2019: 15-17) and 96/98/99 -> missing
-        TRUE ~ NA_character_
-      ),
-      below_poverty = case_when(
-        ratcat_a >= 1 & ratcat_a <= 3   ~ 1L,
-        ratcat_a >= 4 & ratcat_a <= 14  ~ 0L,
-        TRUE ~ NA_integer_
-      ),
-      low_income = case_when(
-        ratcat_a >= 1 & ratcat_a <= 7   ~ 1L,
-        ratcat_a >= 8 & ratcat_a <= 14  ~ 0L,
-        TRUE ~ NA_integer_
-      )
-    )
+  nhis <- nhis %>% mutate(
+    pov_cat = case_when(
+      between(ratcat_a, 1, 3) ~ "Below poverty (<100% FPL)",
+      between(ratcat_a, 4, 7) ~ "100-199% FPL",
+      between(ratcat_a, 8, 11) ~ "200-399% FPL",
+      between(ratcat_a, 12, 14) ~ "400%+ FPL", TRUE ~ NA_character_),
+    below_poverty = case_when(between(ratcat_a, 1, 3) ~ 1L,
+      between(ratcat_a, 4, 14) ~ 0L, TRUE ~ NA_integer_),
+    low_income = case_when(between(ratcat_a, 1, 7) ~ 1L,
+      between(ratcat_a, 8, 14) ~ 0L, TRUE ~ NA_integer_),
+    pov_cat_with_coarse = case_when(
+      srvy_yr %in% 2007:2018 & ratcat_a == 15 ~ "Below poverty (<100% FPL)",
+      srvy_yr %in% 2007:2018 & ratcat_a == 16 ~ "100-199% FPL", TRUE ~ pov_cat),
+    below_poverty_with_coarse = case_when(
+      srvy_yr %in% 2007:2018 & ratcat_a == 15 ~ 1L,
+      srvy_yr %in% 2007:2018 & ratcat_a %in% c(16,17) ~ 0L, TRUE ~ below_poverty),
+    low_income_with_coarse = case_when(
+      srvy_yr %in% 2007:2018 & ratcat_a %in% c(15,16) ~ 1L,
+      srvy_yr %in% 2007:2018 & ratcat_a == 17 ~ 0L, TRUE ~ low_income),
+    pov_cat_src = case_when(!is.na(pov_cat) ~ 1L,
+      !is.na(pov_cat_with_coarse) ~ 2L, TRUE ~ 0L),
+    poverty_binary_src = case_when(!is.na(below_poverty) ~ 1L,
+      !is.na(below_poverty_with_coarse) ~ 2L, TRUE ~ 0L))
 }
-
-# --- Income group (5 categories) ---
+# Nominal dollar bands. Coarse brackets enter only when bounds identify a band.
 if ("incgrp_a" %in% names(nhis)) {
-  nhis <- nhis %>%
-    mutate(
-      income_cat = case_when(
-        incgrp_a == 1 ~ "$0-$34,999",
-        incgrp_a == 2 ~ "$35,000-$49,999",
-        incgrp_a == 3 ~ "$50,000-$74,999",
-        incgrp_a == 4 ~ "$75,000-$99,999",
-        incgrp_a == 5 ~ "$100,000+",
-        # NFS codes (pre-2019: 6-7), 96/99 -> missing
-        TRUE ~ NA_character_
-      )
-    )
+  nhis <- nhis %>% mutate(
+    income_cat = case_when(
+      srvy_yr <= 2006 & incgrp_a %in% c(1:6,13) ~ "$0-$34,999",
+      srvy_yr <= 2006 & incgrp_a == 7 ~ "$35,000-$49,999",
+      srvy_yr <= 2006 & incgrp_a %in% c(9,10) ~ "$50,000-$74,999",
+      srvy_yr >= 2007 & incgrp_a == 1 ~ "$0-$34,999",
+      srvy_yr >= 2007 & incgrp_a == 2 ~ "$35,000-$49,999",
+      srvy_yr >= 2007 & incgrp_a == 3 ~ "$50,000-$74,999",
+      srvy_yr >= 2007 & incgrp_a == 4 ~ "$75,000-$99,999",
+      srvy_yr >= 2007 & incgrp_a == 5 ~ "$100,000+", TRUE ~ NA_character_),
+    income_cat3 = case_when(
+      srvy_yr <= 2006 & incgrp_a %in% c(1:6,13) ~ "Under $35,000",
+      srvy_yr <= 2006 & incgrp_a %in% 7:10 ~ "$35,000-$74,999",
+      srvy_yr <= 2006 & incgrp_a == 11 ~ "$75,000+",
+      srvy_yr >= 2007 & incgrp_a == 1 ~ "Under $35,000",
+      srvy_yr >= 2007 & incgrp_a %in% c(2,3) ~ "$35,000-$74,999",
+      srvy_yr >= 2007 & incgrp_a %in% c(4,5) ~ "$75,000+", TRUE ~ NA_character_),
+    income_cat3_src = if_else(is.na(income_cat3), 0L, 1L))
+  if ("incgrp5" %in% names(nhis)) {
+    bridge <- case_when(nhis$incgrp5 == 1 ~ "Under $35,000",
+      nhis$incgrp5 == 2 ~ "$35,000-$74,999",
+      nhis$incgrp5 %in% c(3,4) ~ "$75,000+", TRUE ~ NA_character_)
+    eligible <- nhis$srvy_yr %in% 2014:2018
+    conflict <- eligible & !is.na(bridge) & !is.na(nhis$income_cat3) & bridge != nhis$income_cat3
+    if (any(conflict)) stop("INCGRP4/5 disagree on three-band income category.")
+    fill <- eligible & is.na(nhis$income_cat3) & !is.na(bridge)
+    nhis$income_cat3[fill] <- bridge[fill]
+    nhis$income_cat3_src[fill] <- 2L
+  }
 }
+if ("income_value_src" %in% names(nhis)) {
+  cat("Income provenance: 0=pre-2019 reported construction; 1=post-2019 reported;\n",
+      "2=post-2019 imputed (main file uses completed implicate 1).\n")
+  print(as.data.frame(nhis %>% count(srvy_yr, income_value_src)), row.names=FALSE)
+}
+# Companions include interview brackets; 2018 used estimated instrument
+# thresholds for those brackets. They are separate sensitivity measures.
 
 # --- Personal earnings (pre-2019 only) ---
 if ("ernyr_a" %in% names(nhis)) {
@@ -606,6 +615,7 @@ cat("   DESCRIPTIVE STATISTICS (optional; not run by default)\n")
 cat("============================================\n\n")
 
 if (run_examples) {
+  cat("Income examples use main-file values only; use 03/04 for MI inference.\n")
 # 13a. Year distribution
 cat("--- Observations by year ---\n")
 print(as.data.frame(nhis %>% count(srvy_yr)), row.names = FALSE)
@@ -744,6 +754,7 @@ cat("   EXAMPLE REGRESSIONS (optional; not run by default)\n")
 cat("============================================\n\n")
 
 if (run_examples) {
+  cat("Income examples use main-file values only; use 03/04 for MI inference.\n")
 if (!requireNamespace("broom", quietly = TRUE)) {
   stop("Install the broom package or set run_examples <- FALSE.", call. = FALSE)
 }
@@ -812,7 +823,8 @@ cat("============================================\n")
 #    harmonizable income measure across all years. It uses the same
 #    14-category coding in both eras.
 #    For continuous family income or more detailed poverty ratios,
-#    use the multiple imputation files (INCMIMP pre-2019, adultinc
+#    use the multiple imputation files (INCIMPS + INCMIMP in 2004-08,
+#    INCMIMP in 2009-18, adultinc
 #    post-2019) with proper MI techniques (Rubin's rules).
 #
 # 3. RACE HARMONIZATION:
