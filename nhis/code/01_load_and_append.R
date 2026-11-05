@@ -39,7 +39,7 @@ library(dplyr)
 library(readr)
 
 # ============================================================================
-# 1. DEFINE PATHS AND YEAR RANGE
+# 1. USER SETTINGS: PATHS, YEARS, COLUMNS, EXPORTS
 # ============================================================================
 
 # Optional manual path override. Leave as NULL for auto-detection.
@@ -214,14 +214,16 @@ adult_starter_vars <- c(
   "hypev_a", "chlev_a", "chdev_a", "angev_a", "miev_a", "strev_a",
   "asev_a", "canev_a", "dibev_a", "copdev_a", "arthev_a", "depev_a",
   "anxev_a", "phqcat_a", "gadcat_a", "bmicat_a",
-  "ratcat_a", "incgrp_a", "ernyr_a", "wtfa_a", "pstrat", "ppsu"
+  "ratcat_a", "incgrp_a", "ernyr_a", "wtfa_a", "pstrat", "ppsu",
+  "fmx", "fpx", "rat_cat", "rat_cat2", "rat_cat3", "rat_cat4", "rat_cat5", "incgrp", "incgrp2", "incgrp3", "incgrp4", "incgrp5", "ernyr_p", "fm_size", "rat_cat3_raw", "rat_cat3_corrected_2007", "income_value_src", "ratcat_a", "incgrp_a", "faminctc_a", "povrattc_a", "impnum_a", "impincflg_a", "inctcflg_a"
 )
 
 child_starter_vars <- c(
   "srvy_yr", "hhx", "era_post2019",
   "agep_c", "sex_c", "hisp_c", "raceallp_c",
   "notcov_c", "medicare_c", "medicaid_c", "private_c", "phstat_c",
-  "wtfa_c", "pstrat", "ppsu"
+  "wtfa_c", "pstrat", "ppsu",
+  "fmx", "fpx", "rat_cat", "rat_cat2", "rat_cat3", "rat_cat4", "rat_cat5", "incgrp", "incgrp2", "incgrp3", "incgrp4", "incgrp5", "ernyr_p", "fm_size", "rat_cat3_raw", "rat_cat3_corrected_2007", "income_value_src", "ratcat_c", "incgrp_c", "faminctc_c", "povrattc_c", "impnum_c", "impincflg_c", "inctcflg_c"
 )
 
 harmonize_post2019_adult_names <- function(df) {
@@ -499,6 +501,10 @@ load_pre2019_year <- function(year, sample_type = "adult") {
   if ("ffdstyn" %in% names(merged) && !("fsnap" %in% names(merged)))
     names(merged)[names(merged) == "ffdstyn"] <- "fsnap"
 
+  # Explicit alias: later pre-redesign files use DIBEV1.
+  if (sample_type == "adult" && "dibev1" %in% names(merged))
+    merged$dibev_a <- merged$dibev1
+
   # Chronic conditions: add suffix (adult only)
   if (sample_type == "adult") {
     chronic_vars <- c("hypev", "chlev", "chdev", "angev", "miev", "strev",
@@ -510,35 +516,25 @@ load_pre2019_year <- function(year, sample_type = "adult") {
     }
   }
 
-  # Income / poverty ratio
-  # The poverty ratio category variable changes name across years:
-  #   2004-2006: rat_cat  (no suffix)
-  #   2007-2013: rat_cat2, rat_cat3  (two imputations)
-  #   2014:      rat_cat4, rat_cat5  (two imputations)
-  # Pick the first available variant and rename to ratcat_a.
-  ratcat_renamed <- FALSE
+  # Reported detailed/bridge constructions, not MI implicates. Keep natives.
+  # 2004-06: RAT_CAT/INCGRP; 2007-13: *2/*3; 2014-18: *4/*5.
   for (rc in c("rat_cat", "rat_cat2", "rat_cat4")) {
-    if (!ratcat_renamed && rc %in% names(merged)) {
-      names(merged)[names(merged) == rc] <- "ratcat_a"
-      ratcat_renamed <- TRUE
-    }
+    if (rc %in% names(merged)) merged[[paste0("ratcat", suffix)]] <- merged[[rc]]
   }
-
-  incgrp_renamed <- FALSE
   for (ig in c("incgrp", "incgrp2", "incgrp4")) {
-    if (!incgrp_renamed && ig %in% names(merged)) {
-      names(merged)[names(merged) == ig] <- "incgrp_a"
-      incgrp_renamed <- TRUE
-    }
+    if (ig %in% names(merged)) merged[[paste0("incgrp", suffix)]] <- merged[[ig]]
   }
-
-  # Drop alternate imputation versions
-  drop_inc <- c("rat_cat3", "rat_cat5", "incgrp3", "incgrp5")
-  merged <- merged %>% select(-any_of(drop_inc))
-
-  # Personal earnings (from personsx): ernyr_p -> ernyr_a (adult only)
   if (sample_type == "adult" && "ernyr_p" %in% names(merged))
-    names(merged)[names(merged) == "ernyr_p"] <- "ernyr_a"
+    merged$ernyr_a <- merged$ernyr_p
+  # CDC's 2007 correction; idempotent and confined to the loaded copy.
+  if (year == 2007 && "rat_cat3" %in% names(merged)) {
+    merged$rat_cat3_raw <- merged$rat_cat3
+    affected <- with(merged, !is.na(fm_size) & fm_size <= 2 &
+      !is.na(incgrp2) & incgrp2 == 2 & !is.na(rat_cat3) & rat_cat3 == 17)
+    merged$rat_cat3_corrected_2007 <- as.integer(affected)
+    merged$rat_cat3[affected] <- 99
+  }
+  merged$income_value_src <- 0L # reported main-file constructions before 2019
 
   # Survey design: harmonize stratum/PSU
   if (year <= 2005) {
@@ -671,6 +667,8 @@ for (y in post2019_years) {
     df <- type_convert(df, col_types = cols(.default = col_guess()))
     if (!"srvy_yr" %in% names(df)) df$srvy_yr <- y
     df$era_post2019 <- 1L
+    flag <- df[[paste0("impincflg_", "a")]]
+    df$income_value_src <- ifelse(flag == 0, 1L, 2L)
     df <- keep_starter_columns(df, "adult")
     cat(paste0("  Adult: ", nrow(df), " obs\n"))
     post2019_adult_list[[as.character(y)]] <- df
@@ -690,6 +688,7 @@ for (y in post2019_years) {
     df <- type_convert(df, col_types = cols(.default = col_guess()))
     if (!"srvy_yr" %in% names(df)) df$srvy_yr <- y
     df$era_post2019 <- 1L
+    df$income_value_src <- ifelse(df$impincflg_c == 0, 1L, 2L)
     df <- keep_starter_columns(df, "child")
     cat(paste0("  Child: ", nrow(df), " obs\n"))
     post2019_child_list[[as.character(y)]] <- df
@@ -829,8 +828,8 @@ cat("Next step: run 02_clean_and_analyze.R\n")
 #    The cleaning script (02_clean_and_analyze.R) handles coding differences.
 #
 # 4. SURVEY DESIGN:
-#    Stratum offsets (1000 for 2004-05, 2000 for 2006+) ensure strata
-#    are distinct when pooling across design periods.
+#    Stratum offsets (1000 for 2004-05, 2000 for 2006-15) distinguish some
+#    earlier periods; pooled survey designs need their own review.
 #
 # 5. CITATION:
 #    National Center for Health Statistics. National Health Interview

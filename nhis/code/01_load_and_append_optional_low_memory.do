@@ -19,7 +19,7 @@ set more off
 set maxvar 32767
 
 * ============================================================================
-* 1. DEFINE PATHS AND YEAR RANGE
+* 1. USER SETTINGS: PATHS, YEARS, COLUMNS
 * ============================================================================
 * Auto-detect the dataset root from global nhis_root, the dataset folder,
 * code/, or the repo root.
@@ -101,8 +101,8 @@ if inlist(lower(trim("`pre2019_years'")), "none", "skip", ".") {
 * Low-memory mode is always on in this standalone optional loader.
 local keep_starter_vars_only = 1
 
-local adult_starter_vars "srvy_yr hhx era_post2019 agep_a sex_a hisp_a raceallp_a educ_a citizenp_a notcov_a medicare_a medicaid_a private_a phstat_a pdmed12m_a pnmed12m_a hypev_a chlev_a chdev_a angev_a miev_a strev_a asev_a canev_a dibev_a copdev_a arthev_a depev_a anxev_a phqcat_a gadcat_a bmicat_a ratcat_a incgrp_a ernyr_a wtfa_a pstrat ppsu"
-local child_starter_vars "srvy_yr hhx era_post2019 agep_c sex_c hisp_c raceallp_c notcov_c medicare_c medicaid_c private_c phstat_c wtfa_c pstrat ppsu"
+local adult_starter_vars "srvy_yr hhx era_post2019 agep_a sex_a hisp_a raceallp_a educ_a citizenp_a notcov_a medicare_a medicaid_a private_a phstat_a pdmed12m_a pnmed12m_a hypev_a chlev_a chdev_a angev_a miev_a strev_a asev_a canev_a dibev_a copdev_a arthev_a depev_a anxev_a phqcat_a gadcat_a bmicat_a ratcat_a incgrp_a ernyr_a wtfa_a pstrat ppsu fmx fpx rat_cat rat_cat2 rat_cat3 rat_cat4 rat_cat5 incgrp incgrp2 incgrp3 incgrp4 incgrp5 ernyr_p fm_size rat_cat3_raw rat_cat3_corrected_2007 income_value_src ratcat_a incgrp_a faminctc_a povrattc_a impnum_a impincflg_a inctcflg_a"
+local child_starter_vars "srvy_yr hhx era_post2019 agep_c sex_c hisp_c raceallp_c notcov_c medicare_c medicaid_c private_c phstat_c wtfa_c pstrat ppsu fmx fpx rat_cat rat_cat2 rat_cat3 rat_cat4 rat_cat5 incgrp incgrp2 incgrp3 incgrp4 incgrp5 ernyr_p fm_size rat_cat3_raw rat_cat3_corrected_2007 income_value_src ratcat_c incgrp_c faminctc_c povrattc_c impnum_c impincflg_c inctcflg_c"
 local extra_keep_vars "$nhis_extra_keep_vars"
 local extra_var_families `"$nhis_extra_var_families"'
 
@@ -341,7 +341,7 @@ foreach y of local pre2019_years {
             }
 
             display as text "  Creating `comp'.dta from CSV fallback..."
-            import delimited using "`csv_file'", clear varnames(1) case(lower)
+            import delimited using "`csv_file'", clear varnames(1) case(lower) asdouble
             compress
             save "`ydir'/`comp'.dta", replace
 
@@ -369,7 +369,7 @@ foreach y of local pre2019_years {
         }
         if `y' >= 2015 & `csv_found' == 1 {
             display as text "  Creating `comp'.dta from CSV fallback..."
-            import delimited using "`csv_file'", clear varnames(1) case(lower)
+            import delimited using "`csv_file'", clear varnames(1) case(lower) asdouble
             compress
             save "`ydir'/`comp'.dta", replace
 
@@ -446,6 +446,7 @@ foreach y of local pre2019_years {
 
     * --- Load person-level file ---
     use "`ydir'/personsx.dta", clear
+    nhis_norm_sample_keys
     quietly describe, short
     display as text "  personsx: " _N " persons"
 
@@ -466,7 +467,17 @@ foreach y of local pre2019_years {
     * --- Merge familyxx (family-level) ---
     capture confirm file "`ydir'/familyxx.dta"
     if _rc == 0 {
-        merge m:1 hhx fmx srvy_yr using "`ydir'/familyxx.dta", ///
+        preserve
+            use "`ydir'/familyxx.dta", clear
+            foreach v of varlist _all {
+                local lc = lower("`v'")
+                if "`lc'" != "`v'" capture rename `v' `lc'
+            }
+            nhis_norm_sample_keys
+            tempfile family_normalized
+            save `family_normalized'
+        restore
+        merge m:1 hhx fmx srvy_yr using `family_normalized', ///
             gen(_fammerge) keep(master match)
         display as text "  familyxx merge: " _N " obs"
     }
@@ -474,7 +485,17 @@ foreach y of local pre2019_years {
     * --- Merge househld (household-level) ---
     capture confirm file "`ydir'/househld.dta"
     if _rc == 0 {
-        merge m:1 hhx srvy_yr using "`ydir'/househld.dta", ///
+        preserve
+            use "`ydir'/househld.dta", clear
+            foreach v of varlist _all {
+                local lc = lower("`v'")
+                if "`lc'" != "`v'" capture rename `v' `lc'
+            }
+            nhis_norm_sample_keys
+            tempfile house_normalized
+            save `house_normalized'
+        restore
+        merge m:1 hhx srvy_yr using `house_normalized', ///
             gen(_hhmerge) keep(master match)
         display as text "  househld merge: " _N " obs"
     }
@@ -581,46 +602,30 @@ foreach y of local pre2019_years {
     }
     capture rename fsnap fsnap_a
 
-    * Income / poverty ratio
-    * The poverty ratio category variable changes name across years:
-    *   2004-2006: rat_cat  (no suffix)
-    *   2007-2013: rat_cat2, rat_cat3  (two imputations)
-    *   2014:      rat_cat4, rat_cat5  (two imputations)
-    * We pick the first available variant and rename to ratcat_a.
-    * Similarly for income group: incgrp -> incgrp2 -> incgrp4
-    local ratcat_renamed = 0
+    * Detailed/bridge reported categories are alternatives, not MI implicates.
     foreach rc in rat_cat rat_cat2 rat_cat4 {
-        if `ratcat_renamed' == 0 {
-            capture confirm variable `rc'
-            if _rc == 0 {
-                rename `rc' ratcat_a
-                local ratcat_renamed = 1
-            }
-        }
+        capture confirm variable `rc'
+        if _rc == 0 clonevar ratcat_a = `rc'
     }
-
-    local incgrp_renamed = 0
     foreach ig in incgrp incgrp2 incgrp4 {
-        if `incgrp_renamed' == 0 {
-            capture confirm variable `ig'
-            if _rc == 0 {
-                rename `ig' incgrp_a
-                local incgrp_renamed = 1
-            }
-        }
+        capture confirm variable `ig'
+        if _rc == 0 clonevar incgrp_a = `ig'
     }
-
-    * Drop the alternate imputation versions (keep only the one we renamed)
-    capture drop rat_cat3 rat_cat5 incgrp3 incgrp5
-
-    * Personal earnings (from personsx): ernyr_p -> ernyr_a
-    capture rename ernyr_p ernyr_a
+    if `y' == 2007 {
+        clonevar rat_cat3_raw = rat_cat3
+        gen byte rat_cat3_corrected_2007 = fm_size <= 2 & incgrp2 == 2 & rat_cat3 == 17
+        replace rat_cat3 = 99 if rat_cat3_corrected_2007 == 1
+    }
+    gen byte income_value_src = 0
+    capture clonevar ernyr_a = ernyr_p
 
     * Health status and utilization
     capture rename phstat   phstat_a
     capture rename pdmed12m pdmed12m_a
     capture rename pnmed12m pnmed12m_a
 
+    * Explicit DIBEV1 alias; do not rely on variable-name abbreviation.
+    capture rename dibev1 dibev
     * Chronic conditions (add _a suffix)
     foreach cv in hypev chlev chdev angev miev strev asev canev dibev copdev arthev depev anxev {
         capture rename `cv' `cv'_a
@@ -628,9 +633,8 @@ foreach y of local pre2019_years {
 
     * Survey design — harmonize stratum/PSU names
     * 2004-05: stratum/psu  (add 1000 offset to stratum)
-    * 2006+:   strat_p/psu_p (add 2000 offset to strat_p)
-    * The offsets ensure strata are distinct across design periods
-    * (following CDC guidance in NHIS documentation)
+    * 2006-15: strat_p/psu_p (add 2000 offset); 2016-18: native pstrat/ppsu
+    * These existing offsets are not a certification of cross-era pooled inference.
     if `y' <= 2005 {
         capture confirm variable stratum
         if _rc == 0 {
@@ -733,7 +737,7 @@ foreach y of local post2019_years {
     * Stata's delimited-text importer reads the annual CSV before the script
     * drops unused columns. Processing and saving one year at a time still
     * prevents a full multi-year, full-column stack from accumulating in RAM.
-    import delimited using "`csv_file'", clear varnames(1) case(lower)
+    import delimited using "`csv_file'", clear varnames(1) case(lower) asdouble
 
     * CDC renamed these post-redesign fields in 2021. Keep one stable starter
     * name across all post-2019 years.
@@ -748,6 +752,7 @@ foreach y of local post2019_years {
 
     * Mark era
     gen byte era_post2019 = 1
+    gen byte income_value_src = cond(impincflg_a == 0, 1, 2) if !missing(impincflg_a)
 
     if `keep_starter_vars_only' == 1 {
         nhis_keep_existing_vars, vars("`adult_low_memory_vars'")
@@ -845,8 +850,8 @@ if `n_extra_families' > 0 {
 * from post-2019 (1=yes, 2=no). → Handled in cleaning script.
 
 * Income/poverty: Pre-2019 rat_cat/rat_cat2/rat_cat4 renamed to ratcat_a.
-* Same 14-category coding in both eras. Pre-2019 incgrp/incgrp2/incgrp4
-* renamed to incgrp_a (5 income groups). Personal earnings (ernyr_p ->
+* Detailed poverty codes 1-14 share bounds. Native coarse codes are retained.
+* INCGRP in 2004-06 has 11 bands; later primary fields have five bands. Personal earnings (ernyr_p ->
 * ernyr_a) available pre-2019 only. → Handled in cleaning script.
 
 label var era_post2019 "Post-2019 redesign era (0=pre-2019, 1=2019+)"
@@ -891,6 +896,7 @@ foreach y of local pre2019_years {
     }
 
     use "`ydir'/personsx.dta", clear
+    nhis_norm_sample_keys
     foreach v of varlist _all {
         local lc = lower("`v'")
         if "`lc'" != "`v'" {
@@ -903,14 +909,34 @@ foreach y of local pre2019_years {
     * Merge familyxx
     capture confirm file "`ydir'/familyxx.dta"
     if _rc == 0 {
-        merge m:1 hhx fmx srvy_yr using "`ydir'/familyxx.dta", ///
+        preserve
+            use "`ydir'/familyxx.dta", clear
+            foreach v of varlist _all {
+                local lc = lower("`v'")
+                if "`lc'" != "`v'" capture rename `v' `lc'
+            }
+            nhis_norm_sample_keys
+            tempfile family_normalized
+            save `family_normalized'
+        restore
+        merge m:1 hhx fmx srvy_yr using `family_normalized', ///
             gen(_fammerge) keep(master match)
     }
 
     * Merge househld
     capture confirm file "`ydir'/househld.dta"
     if _rc == 0 {
-        merge m:1 hhx srvy_yr using "`ydir'/househld.dta", ///
+        preserve
+            use "`ydir'/househld.dta", clear
+            foreach v of varlist _all {
+                local lc = lower("`v'")
+                if "`lc'" != "`v'" capture rename `v' `lc'
+            }
+            nhis_norm_sample_keys
+            tempfile house_normalized
+            save `house_normalized'
+        restore
+        merge m:1 hhx srvy_yr using `house_normalized', ///
             gen(_hhmerge) keep(master match)
     }
 
@@ -977,6 +1003,22 @@ foreach y of local pre2019_years {
     }
 
     * Survey design
+    * Detailed/bridge reported categories are alternatives, not MI implicates.
+    foreach rc in rat_cat rat_cat2 rat_cat4 {
+        capture confirm variable `rc'
+        if _rc == 0 clonevar ratcat_c = `rc'
+    }
+    foreach ig in incgrp incgrp2 incgrp4 {
+        capture confirm variable `ig'
+        if _rc == 0 clonevar incgrp_c = `ig'
+    }
+    if `y' == 2007 {
+        clonevar rat_cat3_raw = rat_cat3
+        gen byte rat_cat3_corrected_2007 = fm_size <= 2 & incgrp2 == 2 & rat_cat3 == 17
+        replace rat_cat3 = 99 if rat_cat3_corrected_2007 == 1
+    }
+    gen byte income_value_src = 0
+
     if `y' <= 2005 {
         capture confirm variable stratum
         if _rc == 0 {
@@ -1038,11 +1080,12 @@ foreach y of local post2019_years {
 
     * As for adults, the annual CSV is imported before unused columns are
     * dropped; the append step uses only the reduced yearly files.
-    import delimited using "`csv_file'", clear varnames(1) case(lower)
+    import delimited using "`csv_file'", clear varnames(1) case(lower) asdouble
     capture confirm variable srvy_yr
     if _rc != 0 gen srvy_yr = `y'
 
     gen byte era_post2019 = 1
+    gen byte income_value_src = cond(impincflg_c == 0, 1, 2) if !missing(impincflg_c)
     if `keep_starter_vars_only' == 1 {
         nhis_keep_existing_vars, vars("`child_low_memory_vars'")
     }

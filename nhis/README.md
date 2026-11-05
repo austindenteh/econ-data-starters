@@ -84,7 +84,7 @@ Each year has 2 self-contained data files (no merging needed):
 | Sampling unit | Family | Household |
 | Data format | Fixed-width ASCII (`.DAT`) + do-files | CSV (`.csv`) in `.zip` archives |
 | Weight variable | `wtfa_sa` (sample adult), `wtfa_sc` (sample child) | `wtfa_a` (adult), `wtfa_c` (child) |
-| Strata/PSU | `stratum`/`psu` (2004–05), `strat_p`/`psu_p` (2006+) | `pstrat`/`ppsu` |
+| Strata/PSU | `stratum`/`psu` (2004–05), `strat_p`/`psu_p` (2006–2015), native `pstrat`/`ppsu` (2016–2018) | `pstrat`/`ppsu` |
 | PHQ-8 / GAD-7 | Not available | Available |
 
 ---
@@ -100,7 +100,9 @@ nhis/
 │   ├── 01_load_and_append_optional_low_memory.do ← Optional low-memory Stata entry point
 │   ├── 01_load_and_append_optional_low_memory.R  ← Optional low-memory R entry point
 │   ├── 02_clean_and_analyze.do  ← Clean variables, descriptive stats (Stata)
-│   └── 02_clean_and_analyze.R   ← Same in R
+│   ├── 02_clean_and_analyze.R   ← Same in R
+│   ├── 03_load_income_implicates_optional.R / .do ← Separate completed MI data
+│   └── 04_income_mi_example_optional.R / .do     ← Disabled survey + MI example
 ├── data/
 │   ├── NHIS 2004/               ← Pre-2019: .DAT + CDC do-files + .dta
 │   ├── NHIS 2005/
@@ -115,7 +117,8 @@ nhis/
 ├── docs/
 │   ├── NHIS_2019_Redesign_sr02-207.pdf
 │   ├── NHIS_2024_adult_codebook.pdf
-│   └── NHIS_2024_child_codebook.pdf
+│   ├── NHIS_2024_child_codebook.pdf
+│   └── income_variable_matrix.md ← Income definitions, eras, flags and sources
 └── output/                      ← Cleaned datasets (created by scripts)
     ├── nhis_adult.dta           ← Combined raw adult file
     ├── nhis_adult.rds           ← Combined raw adult file from R
@@ -144,6 +147,8 @@ https://www.dropbox.com/scl/fo/oxcdw665ng3q39d11r5yf/ABOW0em1n3G2nsnt4ddrvIY?rlk
 | 2015–2018 | `NHIS 2015/` through `NHIS 2018/` | ~1 GB total | Pre-redesign era — scripts extract archives or use CSV fallback when needed |
 
 Place each year folder in `data/`. The starter scripts auto-detect which years are present and process only those.
+
+The ordinary `01`/`02` workflow uses the main annual files. To use the optional income-imputation workflow, also obtain the separate income files for your selected years; see [Income Imputation Files](#income-imputation-files-optional-rstata-workflow).
 
 **Option B — CDC website:**
 1. Go to https://www.cdc.gov/nchs/nhis/data-questionnaires-documentation.htm
@@ -309,8 +314,8 @@ Reference measurements from the reviewed local files are below. They are approxi
 
 | R low-memory selection | Columns read | Result | Saved RDS size | Reference runtime / R heap high-water |
 |---|---|---|---:|---:|
-| Default 2023-2024 | Adult: 31 of 647/630 per year; child: 13 of 370/358 | Adult: 62,151 rows x 32 columns; child: 16,052 x 14 | Adult: 1.1 MB; child: 212 KB | About 2.5 seconds / 134 MB |
-| Pre-redesign check, 2014 only | Adult components: 33 of 641 person, 6 of 127 family, 4 of 17 household, 19 of 787 sample-adult columns | Adult: 36,697 rows x 31 columns; child: 13,380 x 15 | Adult: 606 KB; child: 151 KB | About 2.9 seconds; heap not recorded |
+| Default 2023-2024 | Adult: 35 of 647/630 per year; child: 18 of 370/358 | Adult: 62,151 rows x 37 columns; child: 16,052 x 20 | Adult: 1.32 MB; child: 277 KB | About 2.6 seconds / 145 MB |
+| Pre-redesign check, 2014 only | Adult components: 33 of 641 person, 9 of 127 family, 4 of 17 household, 19 of 787 sample-adult columns | Adult: 36,697 rows x 40 columns; child: 13,380 x 26 | Adult: 815 KB; child: 244 KB | About 2.6 seconds; heap not recorded |
 
 The R heap figure is the sum of R's recorded high-water cell allocations, not total operating-system process memory. Storage speed, software versions, requested extras, and optional exports can materially change these figures.
 
@@ -337,12 +342,12 @@ Pre-2019 variable names and post-redesign aliases are renamed to stable starter 
 | `medicare` | `medicare_a` | Medicare |
 | `phstat` | `phstat_a` | Self-rated health |
 | `wtfa_sa` | `wtfa_a` | Sample adult weight |
-| `strat_p` | `pstrat` | Pseudo-stratum (with offset) |
+| `strat_p` (2006–2015) | `pstrat` | Pseudo-stratum (existing offset); 2016–2018 retain native `pstrat` |
 | `psu_p` | `ppsu` | Pseudo-PSU |
 | `citizenp`; `citznstp_a` in 2019+ | `citizenp_a` | Citizenship |
 | `plborn` | `plborn_a` | Place of birth |
-| `rat_cat*` | `ratcat_a` | Poverty ratio category (14-level) |
-| `incgrp*` | `incgrp_a` | Family income group |
+| `rat_cat`, `rat_cat2`, `rat_cat4` | `ratcat_a/c` (copy; natives retained) | Detailed and coarse primary poverty categories |
+| `incgrp`, `incgrp2`, `incgrp4` | `incgrp_a/c` (copy; natives retained) | Reported primary income group; eleven bands in 2004–2006, five detailed bands later |
 | `ernyr_p` | `ernyr_a` | Personal earnings (adults, pre-2019 only) |
 
 **Within pre-2019 name changes** (some variable names changed during 2004–2018):
@@ -454,39 +459,47 @@ These variables are missing for pre-2019 observations because the PHQ-8 and GAD-
 
 ### Income / Poverty
 
-| Variable | Source | Description |
+NHIS provides family-income dollar bands, poverty measures, and continuous family-income dollars in some years. Income bands describe nominal dollars; poverty measures compare family income with a threshold that reflects family size and composition. Personal earnings are a separate concept and are available in the ordinary starter only before 2019.
+
+**Choose a path before choosing a variable:**
+
+| Your goal | Route | What to expect |
 |---|---|---|
-| `pov_cat` | `ratcat_a` | Poverty category (Below poverty, 100-199% FPL, 200-399% FPL, 400%+ FPL) |
-| `below_poverty` | `ratcat_a` | Below federal poverty level (binary) |
-| `low_income` | `ratcat_a` | Below 200% FPL (binary) |
-| `income_cat` | `incgrp_a` | Family income group ($0-$34,999 through $100,000+) — not available 2021+ |
-| `earn_cat` | `ernyr_a` | Personal earnings category — pre-2019 only |
+| Explore the data or prepare an ordinary adult analysis file | Run one `01` loader, then the matching `02` cleaner | Start with the strict poverty measures and `income_cat3` when grouped income is released, especially for comparisons including 2004–2006. Some responses remain unclassified. From 2019, ordinary income values come from only the first completed imputation; this route omits between-imputation uncertainty. |
+| Check whether broad interview brackets change your results | Compare the separate `*_with_coarse` poverty measures from `02` with the strict measures and source flags | Retain a bracket only when it identifies the outcome. These sensitivity measures do not resolve all missing income or replace MI. |
+| Account for income-imputation uncertainty in income/poverty estimates or models | Build matching ordinary inputs with `01`, then use optional `03` and an MI analysis | Download the separate income files and analyze all five pre-2019 or all ten post-2019 completed datasets ("implicates"), pooling estimates and variances. `03` supports adults and children. Optional `04` demonstrates single-year survey poverty means and is disabled by default. See the [MI workflow](#income-imputation-files-optional-rstata-workflow) for downloads, settings and commands. |
 
-**Income harmonization across eras:** The poverty ratio category (`ratcat_a` → `pov_cat`) is the most consistently available income measure across all years. It uses the same 14-category coding in both eras (codes 1-14 map to poverty ratio ranges from under 0.50 to 5.00+).
+An implicate is one completed version of the income data, not another respondent sample. The MI outputs stay separate from the ordinary files; the `04` example runs only after you explicitly enable it.
 
-**Income imputation files:** For continuous family income or precise poverty ratios, use the multiple imputation files (`INCMIMP/` pre-2019, `adultinc` post-2019). These provide 5 replicate implicates requiring proper MI estimation (Rubin's rules). Note that continuous dollar income (`faminctc_a`) is only available through 2022; by 2024, only the poverty ratio remains in the imputation file.
+**Check your years next.** Ordinary files provide family-income categories through 2020. Continuous family-income dollars require the separate MI files before 2019 and are also released in the 2019–2020 main and MI files. From 2021, public main and MI files retain poverty measures but withhold both family-income dollars and grouped income; MI does not restore those fields. Choose a measure available in your selected years, using the era table below. Selecting comparable measures does not by itself establish comparability across the 2019 redesign.
 
-**Variable availability by era:**
+All four loaders retain native pre-2019 income constructions, `FMX/FPX`, earnings, post-2019 continuous poverty ratios, dollar income when released, and imputation/top-code flags. Adult/child aliases use `_a`/`_c`. Both existing cleaners are adult-only.
 
-| Variable | Pre-2019 | 2019-2020 | 2021-2024 |
-|---|---|---|---|
-| Poverty ratio category (`ratcat_a`) | Yes (from `rat_cat*`) | Yes | Yes |
-| Income group (`incgrp_a`) | Yes (from `incgrp*`) | Yes | **No** |
-| Continuous poverty ratio (`povrattc_a`) | Via INCMIMP only | Yes (main file) | Yes (main file) |
-| Continuous family income | Via INCMIMP only | Via adultinc | **No** (dropped by 2024) |
-| Personal earnings (`ernyr_a`) | Yes (11 categories) | **No** | **No** |
-
-### Survey Design
-
-| Variable | Description |
+| Cleaned variable | Meaning |
 |---|---|
-| `srvy_yr` | Survey year |
-| `hhx` | Household identifier (string) |
-| `era_post2019` | Era indicator (0=pre-2019, 1=2019+) |
-| `wtfa_a` / `wtfa_c` | Final annual weight (adult / child) |
-| `wtfa_adj` | Pooled weight (`wtfa_a / N_years`), created in cleaning script |
-| `pstrat` | Pseudo-stratum (harmonized across eras with offsets) |
-| `ppsu` | Pseudo-PSU (harmonized across eras) |
+| `pov_cat`, `below_poverty`, `low_income` | Original strict measures using detailed poverty codes 1–14 |
+| `pov_cat_with_coarse`, `below_poverty_with_coarse`, `low_income_with_coarse` | Separate sensitivity measures retaining primary reported interview brackets where they identify the outcome |
+| `pov_cat_src`, `poverty_binary_src` | 0 unavailable, 1 detailed, 2 interview bracket; primary code 17 identifies binaries but not the four-band category |
+| `income_cat` | Five nominal dollar bands; conservative bounds-based mapping of 2004–2006 eleven-band income |
+| `income_cat3`, `income_cat3_src` | Under $35,000 / $35,000–74,999 / $75,000+; source 0 unavailable, 1 primary, 2 eligible `INCGRP5` bridge fill in 2014–2018 |
+| `earn_cat` | Previous-calendar-year personal earnings for the work-for-pay universe, pre-2019 only; blanks are missing, not zero |
+| `income_value_src` | 0 pre-2019 reported construction, 1 post-2019 reported, 2 post-2019 imputed/main implicate 1 |
+
+The [income variable matrix](docs/income_variable_matrix.md) gives code bounds, sentinels, flags, correction provenance, annual availability and official sources. Pre-2019 `RAT_CAT2/3`, `RAT_CAT4/5` and paired `INCGRP` fields are alternative categorical constructions, **not two imputations**. Detailed poverty bounds align across eras, but main-file provenance changes: from 2019 the convenient income variables are **implicate 1 of ten**. Strict category boundaries do not mean reported-only observations. Ordinary-file income examples omit between-imputation uncertainty; use the optional MI workflow for income inference.
+
+`INCGRP` in 2004–2006 has eleven detailed bands. For 2004–2006, `income_cat` is only a partial measure: it has no classified observations in either upper band and omits the straddling $45,000–54,999 band. Its nonmissing distribution is selected by income. Use `income_cat3` for comparisons across these years; do not interpret a five-band tabulation as the full income distribution. The old $45,000–54,999 band crosses the five-band $50,000 cutoff, and $75,000+ cannot identify either upper band. They remain missing in `income_cat` but can enter `income_cat3`. Primary coarse income codes 6–8 in later years cross the starter bands and stay missing. The 2014–2018 bridge fills only an identified three-band category, with a consistency check and source flag. The poverty companions use interview brackets; [2018 documentation](https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Dataset_Documentation/NHIS/2018/srvydesc.pdf), pp. 43–44, identifies estimated instrument thresholds for those brackets. Interpret these as separate sensitivity measures rather than exact classifications against final thresholds.
+
+The loaders apply CDC's verified [2007 `RAT_CAT3` correction](https://archive.cdc.gov/www_cdc_gov/nchs/nhis/nhis_2007_data_release.htm) to loaded copies, retaining `rat_cat3_raw` and `rat_cat3_corrected_2007`. Already-corrected source files are accepted without further changes; source files are not modified by the correction.
+
+| Era | Main poverty | Main grouped/dollar family income | Separate MI |
+|---|---|---|---|
+| 2004–2006 | `RAT_CAT` | Eleven-band `INCGRP`; no continuous dollars | Five categorical `INCMIMP` plus five continuous `INCIMPS` |
+| 2007–2013 | Primary `RAT_CAT2`, alternative `RAT_CAT3` | Five-band/coarse `INCGRP2`, four-band bridge `INCGRP3` | 2007–2008: `INCMIMP` + `INCIMPS`; 2009 onward: five continuous `INCMIMP` |
+| 2014–2018 | Primary `RAT_CAT4`, alternative `RAT_CAT5` | Five-band/coarse `INCGRP4`, four-band bridge `INCGRP5` | Five continuous `INCMIMP` |
+| 2019–2020 | `RATCAT_A/C`, `POVRATTC_A/C`, main implicate 1 | `INCGRP_A/C`, continuous `FAMINCTC_A/C`, main implicate 1 | Ten `adultinc`/`childinc` implicates including dollars |
+| 2021–2024 | `RATCAT_A/C`, `POVRATTC_A/C`, main implicate 1 | **Both grouped income and continuous family dollars absent from main and MI files** | Ten poverty implicates; dollars withheld beginning in 2021 |
+
+Continuous public ratios are disclosure-limited, not exact unrestricted income. Post-2019 ratios have two decimal places and are top-coded at 10 in 2019, 11 from 2020. `INCTCFLG_A/C` concerns family-dollar top-coding, can vary across implicates, and is absent in 2021 but returns in 2022. The dollar fields do not return with that flag.
 
 ---
 
@@ -508,10 +521,11 @@ The cleaning scripts create `wtfa_adj` automatically based on the number of year
 
 **Stratum offsets for pooling across design periods:**
 - 2004–2005: Uses `stratum`/`psu` → renamed to `pstrat`/`ppsu` with `pstrat = 1000 + stratum`
-- 2006–2018: Uses `strat_p`/`psu_p` → renamed to `pstrat`/`ppsu` with `pstrat = 2000 + strat_p`
+- 2006–2015: Uses `strat_p`/`psu_p` → renamed with `pstrat = 2000 + strat_p`
+- 2016–2018: Uses native `pstrat`/`ppsu`, with no added offset
 - 2019–2024: Uses `pstrat`/`ppsu` natively (no offset needed)
 
-These offsets ensure that strata from different design periods are treated as distinct when pooling.
+These existing offsets distinguish some earlier periods; they do not certify pooled inference across all redesigns. Check annual survey-design guidance before pooling. The optional MI examples use one year and annual weights.
 
 ---
 
@@ -563,9 +577,60 @@ The cleaning script (`02_clean_and_analyze`) focuses on the adult file. To clean
 
 The original RDC research scripts provide a template for child health outcomes (access, utilization, school days lost, etc.).
 
-### Income Imputation Files
+### Income Imputation Files: Optional R/Stata Workflow
 
-Each year includes imputed income files (INCIMPS / INCMIMP for pre-2019; adultinc / childinc for 2019+). These contain multiple imputation replicates (typically 5) of income and poverty ratio variables. For income analyses, use these files with proper multiple imputation techniques.
+The ordinary `01`/`02` path remains one row per selected adult/child. Optional `03_load_income_implicates_optional.*` supports **every year 2004–2024**, defaults to 2024 and both samples, and produces separate completed long files. Optional `04_income_mi_example_optional.*` is disabled by default and demonstrates single-year survey means pooled across **all five** pre-2019 or **all ten** post-2019 implicates. It never overwrites ordinary starter files.
+
+Download the income archives and documentation from the official annual CDC release pages: [2004](https://archive.cdc.gov/www_cdc_gov/nchs/nhis/nhis_2004_data_release.htm), [2007](https://archive.cdc.gov/www_cdc_gov/nchs/nhis/nhis_2007_data_release.htm), [2018](https://archive.cdc.gov/www_cdc_gov/nchs/nhis/nhis_2018_data_release.htm), and [2024 downloads](https://www.cdc.gov/nchs/nhis/documentation/2024-nhis.html). Other years are available through the [NHIS documentation index](https://www.cdc.gov/nchs/nhis/documentation/index.html). These income files are separate downloads from the main adult/child files.
+
+Extract files locally with their original names; do not substitute derived DTA files for raw income ASCII. A supported placement is:
+
+```text
+data/NHIS 2004/INCIMPS/incimps1.dat ... incimps5.dat
+data/NHIS 2004/INCMIMP/INCMAP1.dat ... INCMAP5.dat
+data/NHIS 2005/INCMIMP/INCMIMP1.DAT ... INCMIMP5.DAT
+... (2005–2008 also require INCIMPS and categorical INCMIMP)
+data/NHIS 2009/INCMIMP/INCMIMP1.DAT ... INCMIMP5.DAT
+data/NHIS 2010/INCMIMP/incmimp1.dat ... incmimp5.dat
+... (through 2018; filename case variants accepted)
+data/NHIS 2024/adultinc24csv/adultinc24.csv
+data/NHIS 2024/childinc24csv/childinc24.csv
+```
+
+The same income filenames directly in the annual folder are also accepted. A second matching copy is an error. For 2019–2024 use the CSV downloads and extract the ZIPs first. For older self-extracting downloads, extract the data with an archive utility; do not execute legacy Windows programs on macOS. Early `INCIMPS` lacks response flags, so `03` joins its categorical `INCMIMP` companion by person and imputation number. Raw `POVRATI2/3` is scaled once using the annual layout; missing sentinels are removed before scaling.
+
+First run a matching `01` loader with **every requested MI year**, in the same language. Defaults of either ordinary loader include 2024. Then, from `nhis/`:
+
+```r
+source("code/03_load_income_implicates_optional.R") # 2024, adults + children
+source("code/04_income_mi_example_optional.R")     # disabled by default
+# Opt in after reviewing the example:
+run_mi_example <- TRUE
+mi_example_year <- 2024L
+mi_example_sample <- "adult"
+source("code/04_income_mi_example_optional.R")
+```
+
+```stata
+do code/03_load_income_implicates_optional.do      // 2024, adults + children
+do code/04_income_mi_example_optional.do          // disabled by default
+global nhis_run_mi_example 1
+global nhis_mi_example_year 2024
+global nhis_mi_example_sample "adult"
+do code/04_income_mi_example_optional.do
+```
+
+From the repo root, prepend `nhis/` to the script paths; from `nhis/code/`, use the script basename. `NHIS_ROOT` / `nhis_root_manual` in R and global `nhis_root` in Stata also work. `NHIS_OUTPUT_DIR` / `nhis_output_dir` and global `nhis_output_dir` select the ordinary input/output directory. `mi_base_dir` / global `nhis_mi_base_dir` can point to different existing ordinary outputs; `NHIS_MI_OUTPUT_DIR` / `mi_output_dir` and global `nhis_mi_output_dir` set the separate MI output directory.
+
+To request older/nonconsecutive years, set `mi_years <- c(2004, 2018, 2024)` in R or `global nhis_mi_years "2004 2018 2024"` in Stata, and build ordinary inputs containing those years first. Set `mi_samples <- "child"` / `global nhis_mi_samples "child"` for children only. Settings are visible near the top of the scripts. The optional loader repeats a compact set of ordinary design/demographic fields; `mi_base_extra_vars` / global `nhis_mi_base_extra_vars` adds retained ordinary covariates. Income fields cannot be base extras because they must come from the completed files.
+
+Outputs are `nhis_adult_income_mi_long.rds` / `.dta` and `nhis_child_income_mi_long.rds` / `.dta`, containing completed records only, with canonical `implicate`, year-local `mi_person_id`, `mi_M`, `poverty_ratio_mi`, `family_income_mi` when released, `below_poverty_mi`, `low_income_mi`, and native fields/flags. In a mixed-era stack, the family-income column is structurally missing from 2021 onward. For 2004–2008, the binary poverty indicators use official completed `RAT_CATI` categories; rounded ratios can equal 1.00 or 2.00 while these categories place the person below the threshold. From 2009, the indicators use released ratio cutoffs. `poverty_binary_mi_src` records 0 unavailable, 1 official completed category, or 2 released ratio. Separate `below_poverty_from_ratio_mi` and `low_income_from_ratio_mi` retain ratio cutoffs in every year for comparison; `poverty_ratio_mi` is unchanged. The canonical binary construction changes at 2009; use the `*_from_ratio_mi` companions for the same cutoff rule across all years, while accounting for changes in released ratio precision and disclosure limits. R's optional Stata export uses `_from_r.dta` and is off by default. R examples save a separate `_income_mi_example.rds`; Stata saves `_income_mi_example.ster`.
+
+Before 2019 the merge key is `SRVY_YR HHX FMX FPX` plus implicate. From 2019 it is year plus `HHX` plus implicate, **within each separate adult or child sample**. Identifiers retain leading zeros. `03` rejects duplicate keys, incomplete M sets, missing selected persons, invalid design fields and conflicting observed-status values. Nonselected pre-2019 household members are excluded after linking; no adult/child cross-merge occurs. Main-file income overlap is removed before the join.
+
+Install optional R inference dependencies with `install.packages(c("survey", "mitools"))`; scripts do not install packages. R uses one survey design per completed dataset, finite survey degrees of freedom, and Rubin's rules. Stata creates m=0 using exact-report flags plus invariance checks, imports completed data, registers only invariant base fields as regular, and uses `mi estimate: svy: mean`. Varying native imputation-number and top-code fields remain in the flat file. The Stata example compares completed values against a pre-import snapshot through estimation.
+
+Annual sample weights are used in each implicate, **without dividing by M**. Analyze every completed dataset, then pool coefficients and within/between-imputation variances. Never average person-level imputed values into one dataset, count the stacked records as independent people, or present one implicate as complete income inference. Optional age domains use `mi_domain_age_min` / global `nhis_mi_domain_age_min` and survey subpopulation methods. Income-dependent domains require within-implicate membership and their own model/df checks. These first examples are single-year poverty means; earnings MI and cross-era pooled designs need additional review. See the [income matrix](docs/income_variable_matrix.md) and [CDC MI technical guidance](https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Dataset_Documentation/NHIS/2024/NHIS2024-imputation-techdoc.pdf).
 
 ### Content Changes Over Time
 
@@ -601,3 +666,5 @@ When using NHIS data, cite:
 The redesign documentation should also be cited when using 2019+ data:
 
 > National Center for Health Statistics. Redesigned National Health Interview Survey. Series 2, Number 207. June 2024.
+
+Income notes: legacy FPL labels refer to the Census poverty-threshold ratio, not HHS poverty guidelines. In the early MI files, undefined categorical poverty status overrides the continuous ratio bytes. The 2004 supplement has a verified `01E8` undefined marker in 19 records per implicate; `03` preserves raw text and treats it as missing, and `04` reports exclusions. Other unexpected non-numeric income fields stop the loader. Pre-2019 response, category and top-code fields must have documented codes; undefined flags, categories and ratio markers must agree. Required redesigned income values cannot be blank. The pre-2019 ratio limit of 100 is a conservative validation guard, not an official top-code. R mitools and Stata MI use slightly different pooled small-sample degrees-of-freedom formulas, so confidence limits can differ even when pooled estimates and variances agree. Sparse-domain complete-data df can also differ between R subset designs and Stata subpopulation designs; review both conventions before adapting the example.
